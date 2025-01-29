@@ -38,6 +38,8 @@ namespace ShuitNet.SendEmail
             serviceCollection.AddSingleton<SendEmail>();
 
             var rootCommand = new RootCommand("Send an email");
+
+            #region rootOption
             var toOption = new Option<string>("--to",
                 "The email address of the recipient");
             rootCommand.AddOption(toOption);
@@ -89,34 +91,90 @@ namespace ShuitNet.SendEmail
             var attachmentOption = new Option<string>("--attachment",
                 "The path to the attachment");
             rootCommand.AddOption(attachmentOption);
+            #endregion
+
+            #region addUserCommand
+            var addUser = new Command("add-user", "Add a user. " +
+                "Administrative privileges required");
+
+            var addUserEmail = new Argument<string>("email", "The email address of the user");
+            addUser.AddArgument(addUserEmail);
+
+            var addUserSmtpServer = new Option<string>(["--smtp-server", "-s"], "The SMTP server to use");
+            addUser.AddOption(addUserSmtpServer);
+
+            var addUserSmtpPort = new Option<int>(["--smtp-port", "-p"], "The port of the SMTP server to use");
+            addUser.AddOption(addUserSmtpPort);
+
+            var addUserSmtpSsl = new Option<bool>(["--smtp-ssl", "-l"], "Whether to use SSL for the SMTP server");
+            addUser.AddOption(addUserSmtpSsl);
+
+            var addUserSmtpUsername = new Option<string>(["--smtp-username", "-n"], "The name of the user");
+            addUser.AddOption(addUserSmtpUsername);
+
+            var addUserSmtpPassword = new Option<string>(["--smtp-password", "-w"], "The password of the user");
+            addUser.AddOption(addUserSmtpPassword);
+            #endregion
 
             var parseResult = rootCommand.Parse(args);
-            var from = parseResult.GetValueForOption<string>(fromOption);
+            var from = parseResult.GetValueForOption(fromOption) ?? "";
 
             serviceCollection.AddTransient<Settings>(x => new Settings(from));
             serviceCollection.AddTransient<SendEmail>();
             var serviceProvider = serviceCollection.BuildServiceProvider();
 
-            rootCommand.SetHandler(async () =>
+            var addUserResult = addUser.Parse(args);
+            addUser.SetHandler(async (x) =>
+            {
+                try
+                {
+                    await Settings.AddUserAsync(
+                        addUserResult.GetValueForArgument(addUserEmail)!,
+                        addUserResult.GetValueForOption(addUserSmtpServer)!,
+                        addUserResult.GetValueForOption(addUserSmtpPort)!,
+                        addUserResult.GetValueForOption(addUserSmtpSsl)!,
+                        addUserResult.GetValueForOption(addUserSmtpUsername)!,
+                        addUserResult.GetValueForOption(addUserSmtpPassword)!
+                    );
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Console.WriteLine($"Error: {ex.Message}");
+                    x.ExitCode = 1;
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine("An error occurred while adding the user");
+                    x.ExitCode = 1;
+                }
+            });
+            rootCommand.AddCommand(addUser);
+
+            rootCommand.SetHandler(async (x) =>
             {
                 var sendEmail = serviceProvider.GetRequiredService<SendEmail>();
-
+                if (string.IsNullOrEmpty(from))
+                {
+                    Console.WriteLine("The --from option is required");
+                    x.ExitCode = 1;
+                    return;
+                }
                 try
                 {
                     await sendEmail.SendEmailAsync(
-                        parseResult.GetValueForOption<string>(toOption),
-                        parseResult.GetValueForOption<string>(subjectOption),
-                        parseResult.GetValueForOption<string>(bodyOption),
-                        parseResult.GetValueForOption<string>(smtpServerOption),
-                        parseResult.GetValueForOption<string>(smtpUsernameOption),
-                        parseResult.GetValueForOption<string>(smtpPasswordOption),
+                        parseResult.GetValueForOption(toOption),
+                        parseResult.GetValueForOption(subjectOption),
+                        parseResult.GetValueForOption(bodyOption),
+                        parseResult.GetValueForOption(smtpServerOption),
+                        parseResult.GetValueForOption(smtpUsernameOption),
+                        parseResult.GetValueForOption(smtpPasswordOption),
                         from,
-                        parseResult.GetValueForOption<string>(fromNameOption),
-                        parseResult.GetValueForOption<string>(ccOption),
-                        parseResult.GetValueForOption<string>(bccOption),
-                        parseResult.GetValueForOption<string>(attachmentOption),
-                        parseResult.GetValueForOption<bool>(smtpSslOption),
-                        parseResult.GetValueForOption<int>(smtpPortOption)
+                        parseResult.GetValueForOption(fromNameOption),
+                        parseResult.GetValueForOption(ccOption),
+                        parseResult.GetValueForOption(bccOption),
+                        parseResult.GetValueForOption(attachmentOption),
+                        parseResult.GetValueForOption(smtpSslOption),
+                        parseResult.GetValueForOption(smtpPortOption)
                     );
                     Console.WriteLine("Email sent successfully");
                 }
@@ -124,11 +182,16 @@ namespace ShuitNet.SendEmail
                 {
                     Console.WriteLine($"Error: {ex.Message}");
                     Console.WriteLine($"State: {ex.State}");
+                    x.ExitCode = 1;
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine("An error occurred while sending the email");
+                    x.ExitCode = 1;
                 }
             });
 
-            int code = rootCommand.Invoke(args);
-            Console.WriteLine($"Exit code: {code}");
+            Console.WriteLine($"Exit code: {rootCommand.Invoke(args)}");
         }
     }
 }

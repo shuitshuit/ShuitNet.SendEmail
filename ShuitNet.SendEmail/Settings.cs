@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+﻿using System.Runtime;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace ShuitNet.SendEmail
@@ -21,21 +22,12 @@ namespace ShuitNet.SendEmail
             SmtpSsl = config.SmtpSsl;
         }
 
-        private static string GetBasePath()
-        {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                return "C:\\Program Files\\shuitNet\\sendEmail\\conf.d";
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                return "/etc/shuitNet/sendEmail/conf.d";
-            }
-            else
-            {
-                throw new PlatformNotSupportedException();
-            }
-        }
+        private static string GetBasePath() =>
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                ? @"C:\Program Files\shuitNet\sendemail\conf.d"
+                : RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+                    ? "/etc/shuitNet/sendemail/conf.d"
+                    : throw new PlatformNotSupportedException();
 
         private UserSetting LoadConfig(string address)
         {
@@ -44,11 +36,36 @@ namespace ShuitNet.SendEmail
             var json = JsonSerializer.Deserialize<JsonElement>(file);
             var userSettings = json.GetProperty(address);
             return new UserSetting(
-                userSettings.GetProperty("smtpServer").GetString()!,
-                userSettings.GetProperty("smtpPort").GetInt32(),
-                userSettings.GetProperty("smtpSsl").GetBoolean(),
-                userSettings.GetProperty("smtpUsername").GetString()!,
-                userSettings.GetProperty("smtpPassword").GetString()!);
+                userSettings.GetProperty("smtp-server").GetString()!,
+                userSettings.GetProperty("smtp-port").GetInt32(),
+                userSettings.GetProperty("smtp-ssl").GetBoolean(),
+                userSettings.GetProperty("smtp-username").GetString()!,
+                userSettings.GetProperty("smtp-password").GetString()!);
+        }
+
+        public static async Task AddUserAsync(string email, string smtpServer,
+            int smtpPort, bool smtpSsl, string smtpUsername, string smtpPassword)
+        {
+            var basePath = GetBasePath();
+            var zone = email.Split('@')[1];
+            var filePath = Path.Combine(basePath, $"{zone}.json");
+            if (!File.Exists(filePath))
+            {
+                var stream = File.Create(filePath);
+                stream.Close();
+            }
+
+            var userSettings = new UserSetting(smtpServer, smtpPort, smtpSsl,
+                smtpUsername, smtpPassword);
+            var json = JsonSerializer.Deserialize<Dictionary<string, UserSetting>>
+                (await File.ReadAllTextAsync(filePath))!;
+            if (!json.TryAdd(email, userSettings))
+                throw new InvalidOperationException("The user already exists");
+            var newSetting = JsonSerializer.Serialize(json, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+            await File.WriteAllTextAsync(filePath, newSetting);
         }
     }
 }
