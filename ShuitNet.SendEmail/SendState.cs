@@ -18,6 +18,7 @@ namespace ShuitNet.SendEmail
         ServerError,
         ClientError,
         RecipientError,
+        AccessDenied,
         Error,
     }
 }

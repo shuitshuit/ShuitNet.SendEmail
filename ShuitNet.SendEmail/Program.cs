@@ -36,6 +36,7 @@ namespace ShuitNet.SendEmail
 
 
             serviceCollection.AddSingleton<SendEmail>();
+            serviceCollection.AddSingleton<TemplateManager>();
 
             var rootCommand = new RootCommand("Send an email");
 
@@ -91,6 +92,14 @@ namespace ShuitNet.SendEmail
             var attachmentOption = new Option<string>("--attachment",
                 "The path to the attachment");
             rootCommand.AddOption(attachmentOption);
+
+            var templateOption = new Option<string>("--template",
+                "Use template for email content");
+            rootCommand.AddOption(templateOption);
+
+            var varsOption = new Option<string>("--vars",
+                "Template variables (format: key1=value1,key2=value2)");
+            rootCommand.AddOption(varsOption);
             #endregion
 
             #region addUserCommand
@@ -116,10 +125,30 @@ namespace ShuitNet.SendEmail
             addUser.AddOption(addUserSmtpPassword);
             #endregion
 
-            var parseResult = rootCommand.Parse(args);
-            var from = parseResult.GetValueForOption(fromOption) ?? "";
+            #region templateCommands
+            var templateCommand = new Command("template", "Manage email templates");
 
-            serviceCollection.AddTransient<Settings>(x => new Settings(from));
+            var templateCreateCommand = new Command("create", "Create a new email template");
+            var templateNameArg = new Argument<string>("name", "Template name");
+            templateCreateCommand.AddArgument(templateNameArg);
+            var templateSubjectOption = new Option<string>(["--subject", "-s"], "Template subject");
+            templateCreateCommand.AddOption(templateSubjectOption);
+            var templateBodyOption = new Option<string>(["--body", "-b"], "Template body");
+            templateCreateCommand.AddOption(templateBodyOption);
+
+            var templateListCommand = new Command("list", "List all templates");
+
+            var templateDeleteCommand = new Command("delete", "Delete a template");
+            var templateDeleteNameArg = new Argument<string>("name", "Template name to delete");
+            templateDeleteCommand.AddArgument(templateDeleteNameArg);
+
+            templateCommand.AddCommand(templateCreateCommand);
+            templateCommand.AddCommand(templateListCommand);
+            templateCommand.AddCommand(templateDeleteCommand);
+            #endregion
+
+            var parseResult = rootCommand.Parse(args);
+
             serviceCollection.AddTransient<SendEmail>();
             var serviceProvider = serviceCollection.BuildServiceProvider();
 
@@ -150,43 +179,184 @@ namespace ShuitNet.SendEmail
             });
             rootCommand.AddCommand(addUser);
 
-            rootCommand.SetHandler(async (x) =>
+            templateCreateCommand.SetHandler(async (x) =>
             {
-                var sendEmail = serviceProvider.GetRequiredService<SendEmail>();
-                if (string.IsNullOrEmpty(from))
-                {
-                    Console.WriteLine("The --from option is required");
-                    x.ExitCode = 1;
-                    return;
-                }
                 try
                 {
-                    await sendEmail.SendEmailAsync(
-                        parseResult.GetValueForOption(toOption),
-                        parseResult.GetValueForOption(subjectOption),
-                        parseResult.GetValueForOption(bodyOption),
-                        parseResult.GetValueForOption(smtpServerOption),
-                        parseResult.GetValueForOption(smtpUsernameOption),
-                        parseResult.GetValueForOption(smtpPasswordOption),
-                        from,
-                        parseResult.GetValueForOption(fromNameOption),
-                        parseResult.GetValueForOption(ccOption),
-                        parseResult.GetValueForOption(bccOption),
-                        parseResult.GetValueForOption(attachmentOption),
-                        parseResult.GetValueForOption(smtpSslOption),
-                        parseResult.GetValueForOption(smtpPortOption)
-                    );
-                    Console.WriteLine("Email sent successfully");
+                    var templateManager = serviceProvider.GetRequiredService<TemplateManager>();
+                    var templateCreateResult = templateCreateCommand.Parse(args);
+                    
+                    var template = new EmailTemplate
+                    {
+                        Name = templateCreateResult.GetValueForArgument(templateNameArg)!,
+                        Subject = templateCreateResult.GetValueForOption(templateSubjectOption) ?? "",
+                        Body = templateCreateResult.GetValueForOption(templateBodyOption) ?? ""
+                    };
+                    
+                    await templateManager.SaveTemplateAsync(template);
+                    Console.WriteLine($"Template '{template.Name}' created successfully");
                 }
-                catch (SendException ex)
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error creating template: {ex.Message}");
+                    x.ExitCode = 1;
+                }
+            });
+
+            templateListCommand.SetHandler(async (x) =>
+            {
+                try
+                {
+                    var templateManager = serviceProvider.GetRequiredService<TemplateManager>();
+                    var templates = await templateManager.ListTemplatesAsync();
+                    
+                    if (templates.Count == 0)
+                    {
+                        Console.WriteLine("No templates found");
+                        return;
+                    }
+                    
+                    Console.WriteLine("Available templates:");
+                    foreach (var template in templates)
+                    {
+                        Console.WriteLine($"  {template.Name}");
+                        if (template.Variables.Count > 0)
+                        {
+                            Console.WriteLine($"    Variables: {string.Join(", ", template.Variables)}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error listing templates: {ex.Message}");
+                    x.ExitCode = 1;
+                }
+            });
+
+            templateDeleteCommand.SetHandler(async (x) =>
+            {
+                try
+                {
+                    var templateManager = serviceProvider.GetRequiredService<TemplateManager>();
+                    var templateDeleteResult = templateDeleteCommand.Parse(args);
+                    var templateName = templateDeleteResult.GetValueForArgument(templateDeleteNameArg)!;
+                    
+                    var success = await templateManager.DeleteTemplateAsync(templateName);
+                    if (success)
+                    {
+                        Console.WriteLine($"Template '{templateName}' deleted successfully");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Template '{templateName}' not found");
+                        x.ExitCode = 1;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error deleting template: {ex.Message}");
+                    x.ExitCode = 1;
+                }
+            });
+
+            rootCommand.AddCommand(templateCommand);
+
+            rootCommand.SetHandler(async (x) =>
+            {
+                try
+                {
+                    var from = parseResult.GetValueForOption(fromOption) ?? "";
+                    if (string.IsNullOrEmpty(from))
+                    {
+                        await rootCommand.InvokeAsync(["--help"]);
+                        return;
+                    }
+                    serviceCollection.AddTransient<Settings>(l => new Settings(from));
+                    serviceProvider = serviceCollection.BuildServiceProvider();
+                    var sendEmail = serviceProvider.GetRequiredService<SendEmail>();
+                    var templateManager = serviceProvider.GetRequiredService<TemplateManager>();
+
+                    var subject = parseResult.GetValueForOption(subjectOption);
+                    var body = parseResult.GetValueForOption(bodyOption);
+                    var templateName = parseResult.GetValueForOption(templateOption);
+                    var varsString = parseResult.GetValueForOption(varsOption);
+
+                    if (!string.IsNullOrEmpty(templateName))
+                    {
+                        try
+                        {
+                            var template = await templateManager.LoadTemplateAsync(templateName);
+                            if (template == null)
+                            {
+                                Console.WriteLine($"Template '{templateName}' not found");
+                                x.ExitCode = 1;
+                                return;
+                            }
+
+                            var variables = new Dictionary<string, string>();
+                            if (!string.IsNullOrEmpty(varsString))
+                            {
+                                foreach (var pair in varsString.Split(','))
+                                {
+                                    var parts = pair.Split('=', 2);
+                                    if (parts.Length == 2)
+                                    {
+                                        variables[parts[0].Trim()] = parts[1].Trim();
+                                    }
+                                }
+                            }
+
+                            var (templateSubject, templateBody) = templateManager.ProcessTemplateContent(template, variables);
+                            subject = string.IsNullOrEmpty(subject) ? templateSubject : subject;
+                            body = string.IsNullOrEmpty(body) ? templateBody : body;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error processing template: {ex.Message}");
+                            x.ExitCode = 1;
+                            return;
+                        }
+                    }
+
+                    try
+                    {
+                        await sendEmail.SendEmailAsync(
+                            parseResult.GetValueForOption(toOption),
+                            subject,
+                            body,
+                            parseResult.GetValueForOption(smtpServerOption),
+                            parseResult.GetValueForOption(smtpUsernameOption),
+                            parseResult.GetValueForOption(smtpPasswordOption),
+                            from,
+                            parseResult.GetValueForOption(fromNameOption),
+                            parseResult.GetValueForOption(ccOption),
+                            parseResult.GetValueForOption(bccOption),
+                            parseResult.GetValueForOption(attachmentOption),
+                            parseResult.GetValueForOption(smtpSslOption),
+                            parseResult.GetValueForOption(smtpPortOption)
+                        );
+                        Console.WriteLine("Email sent successfully");
+                    }
+                    catch (SendException ex)
+                    {
+                        Console.WriteLine($"Error: {ex.Message}");
+                        Console.WriteLine($"State: {ex.State}");
+                        x.ExitCode = 1;
+                    }
+                    catch (Exception)
+                    {
+                        Console.WriteLine("An error occurred while sending the email");
+                        x.ExitCode = 1;
+                    }
+                }
+                catch (InvalidOperationException ex)
                 {
                     Console.WriteLine($"Error: {ex.Message}");
-                    Console.WriteLine($"State: {ex.State}");
                     x.ExitCode = 1;
                 }
                 catch (Exception)
                 {
-                    Console.WriteLine("An error occurred while sending the email");
+                    Console.WriteLine("An error occurred while processing the command");
                     x.ExitCode = 1;
                 }
             });
